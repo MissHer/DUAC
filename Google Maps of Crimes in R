@@ -1,0 +1,79 @@
+# Installing packages and masking functions --------------------
+rm(list=ls())
+list.of.packages <- c("dplyr", "stringr","ggmap", "RPostgreSQL", "oce", "rgdal", "raster","maptools", "plotrix",
+                      "sp", "plotGoogleMaps", "jpeg", "spatstat", "fields", "lubridate")
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+lapply(list.of.packages, require, character.only = TRUE)
+select <- dplyr::select
+rm(list.of.packages,new.packages)
+# Defining functions to be used --------------------
+getGOA <- function(){
+  #Syntax: goa <- getGOA()
+  my_db  <- src_postgres(dbname="csci403",host="flowers.mines.edu",user="ceberlco",password=.rs.askForPassword("DB Pass?"))
+  return(as.data.frame(tbl(my_db,"crimetable"),n=-1))
+}
+goa <- getGOA()
+
+
+goa_cleanDates <- function(data){
+  #This is specifically for GOA! It cleans the occ_date, occ_time, and dob columns
+  colonifier <- function(s){
+    #The occ_time column is unstructed numbers, but can be made into "time-like" characters
+    #then turned into POSIX objects, i.e. actual R time data type
+    options(warn=-1)
+    if(str_length(s)==1){
+      paste("00:0",s,sep="")    
+    } else if(str_length(s)==2){
+      paste("00:",s,sep="")
+    } else if(str_length(s)==3){
+      paste("0",str_sub(s,1,1),":",str_sub(s,2,3),sep="")
+    } else if(str_length(s)==4){
+      paste(str_sub(s,1,2),":",str_sub(s,3,4),sep="")
+    } else {
+      return(NA)
+    }
+  }
+  
+  data$occ_date <- str_sub(data$occ_date,start=1,end=-6)
+  data$occ_time <- unlist(lapply(X = data$occ_time, FUN = colonifier))
+  temp <- str_join(data$occ_date, data$occ_time,sep=" ")
+  data$occ_date <- strptime(temp,format="%m/%d/%Y %H:%M")
+  data$occ_date <- as.POSIXct(data$occ_date)
+  #This line above is because of the following error: https://github.com/hadley/dplyr/issues/859
+  data <- data[,-6]
+  data$dob <- str_sub(data$dob,start=1,end=-6)
+  data$dob <- as.Date(data$dob,format="%m/%d/%Y")
+  return(data)
+}
+
+mappingGoog <-function(data, ucr_catCode, year){
+  data<- data[year(data$occ_date)==year,]
+  crime<-data[!is.na(data$longitude)&!is.na(data$latitude),]
+  crime$pin<-as.factor(crime$pin)
+  crime$rin<-as.factor(crime$rin)
+  crime$ucr_cat<-as.factor(crime$ucr_cat)
+  crime$translation <-as.factor(crime$translation)
+  coordinates(crime)=~longitude+latitude
+  
+  crime <- crime[crime$ucr_cat==unique(crime$ucr_cat)[ucr_catCode],]
+  crime <- remove.duplicates(crime)
+  
+  window <- as.owin(border)
+  ds.ppp <- ppp(x=crime@coords[,1],y=crime@coords[,2], window=window)
+  DenUTM <- spTransform(border, CRS("+proj=longlat +datum=WGS84"))
+  Density<-density.ppp(ds.ppp, sigma=bw.diggle, W=as.mask(window))
+  
+  Density.raster <- raster(Density)
+  projection(Density.raster)=projection(DenUTM)
+  mlar<-plotGoogleMaps(Density.raster,filename="Crimes_Density_Drugs.htm",layerName="Number of Crimes", fillOpacity=0.4,strokeWeight=0,colPalette=(oce.colorsJet(10)))
+  return(Density)
+}
+#####################   LARCENY   ###############################
+border<-shapefile("Z:/DU Analytics Challenge/statistical_neighborhoods.shp")
+d <- goa_cleanDates(goa) 
+unique(d$ucr_cat)
+
+for(i in 2010:2015){
+  temp<-mappingGoog(d,3,i) #map larceny in year i
+}
